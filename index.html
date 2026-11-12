@@ -203,6 +203,11 @@
                 <button class="st-btn" id="btnCamOff" aria-label="Matikan kamera" title="Matikan kamera"><svg class="ic"><use href="#i-power"/></svg></button>
               </div>
               <span class="st-fps" id="stFps"></span>
+              <div class="lens" id="lens" hidden></div>
+              <div class="st-hint" id="stHint" hidden>
+                <span><b>Kendaraan bergerak sejajar garis</b>, jadi tidak akan terhitung. Garis harus melintang jalan.</span>
+                <div><button class="btn btn-primary" id="btnHintRotate">Putar garis</button><button class="st-btn" id="btnHintClose" aria-label="Tutup">✕</button></div>
+              </div>
               <div class="hud" id="hud">
                 <div class="hud-total"><b id="hudTotal">0</b><span id="hudDur"></span></div>
                 <div class="hud-chips" id="hudChips"></div>
@@ -261,8 +266,9 @@
             <details class="card tips">
               <summary><span class="tile-ic sun"><svg class="ic"><use href="#i-bulb"/></svg></span><b>Tips agar akurat</b><svg class="ic chev"><use href="#i-down"/></svg></summary>
               <ul>
-                <li>Pasang HP di tripod atau tempat yang tidak goyang, sebaiknya dari atas (jembatan, lantai 2).</li>
-                <li>Buat garis melintang tegak lurus arah kendaraan, di bagian jalan yang terlihat jelas.</li>
+                <li><b>Dari pinggir jalan:</b> HP mendatar, pakai lensa <b>0,5×</b> agar jalan terlihat panjang, garis <b>tegak</b> dari tepi jalan seberang sampai tepi jalan dekat.</li>
+                <li><b>Dari atas</b> (jembatan, lantai 2) lebih akurat karena kendaraan tidak saling menutupi. Garis dibuat mendatar melintang jalan.</li>
+                <li>Pasang HP di tripod atau tempat yang tidak goyang.</li>
                 <li>Hindari kamera menghadap matahari dan bagian jalan yang tertutup pohon.</li>
                 <li>Malam hari atau hujan deras membuat akurasi turun. Pakai Manual atau tambah dengan tap.</li>
                 <li>Kendaraan yang terlewat bisa ditambah dengan tap kartu jenisnya. Salah hitung bisa dibatalkan dengan tombol <b>↶</b>.</li>
@@ -355,6 +361,13 @@
             <button data-model="akurat"><b>Akurat</b><small>±12 MB · HP kencang</small></button>
           </div>
           <div class="model-state" id="modelState"></div>
+          <span class="label">Prosesor</span>
+          <div class="seg" id="procSeg">
+            <button data-proc="auto"><span>Otomatis</span></button>
+            <button data-proc="gpu"><span>GPU</span></button>
+            <button data-proc="cpu"><span>CPU</span></button>
+          </div>
+          <div class="model-state bench"><span id="benchInfo"></span><button class="link-btn" id="btnBench" type="button">Uji ulang</button></div>
           <span class="label">Kecepatan deteksi</span>
           <div class="seg" id="fpsSeg">
             <button data-fps="eco"><span>Hemat</span></button>

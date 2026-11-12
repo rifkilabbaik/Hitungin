@@ -1,4 +1,4 @@
-const SHELL_CACHE = 'hitungin-v1';
+const SHELL_CACHE = 'hitungin-v2';
 const CDN_CACHE = 'hitungin-cdn-v1';
 const KEEP = [SHELL_CACHE, CDN_CACHE, 'hitungin-model-v1'];
 const SHELL = [

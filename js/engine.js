@@ -47,7 +47,8 @@ class Tracker {
     this.tracks = [];
     this.next = 1;
     this.W = 1; this.H = 1;
-    this.line = { x1: 0.94, y1: 0.62, x2: 0.06, y2: 0.62 };
+    // Bawaan tegak: kamera di pinggir jalan, kendaraan melintas kiri-kanan. Sisi A di kiri.
+    this.line = { x1: 0.5, y1: 0.36, x2: 0.5, y2: 0.97 };
     this.armed = false;
     this.dirs = 3;
     this.maxAge = 1100;
@@ -77,31 +78,77 @@ class Tracker {
         const sd = Math.sqrt(d.w * d.h);
         const r = sd / sa;
         if (r > 2.2 || r < 0.45) continue;
-        const dist = Math.hypot(d.x + d.w / 2 - a.px, d.y + d.h / 2 - a.py) / Math.max(sa, sd);
+        let dist = Math.hypot(d.x + d.w / 2 - a.px, d.y + d.h / 2 - a.py) / Math.max(sa, sd);
+        // Jejak yang menunggu konfirmasi juga dicocokkan ke posisi terakhirnya: kalau ternyata diam, hitungannya batal.
+        if (a.pend) dist = Math.min(dist, Math.hypot(d.x + d.w / 2 - a.cx, d.y + d.h / 2 - a.cy) / Math.max(sa, sd));
         const ov = Geo.iou(pb, d);
         // Jejak baru belum punya kecepatan, jadi jarak cocok pertama dibuat lebih longgar.
-        if (dist > (a.hits === 1 ? 1.9 : 1.15) && ov < 0.1) continue;
+        if (dist > (a.hits === 1 ? 1.9 : 1.15) && ov < 0.1) {
+          const ac = this.axisCost(a, d, t, r);
+          if (ac) pairs.push([ac[0], i, j, ac[1]]);
+          continue;
+        }
         let cost = dist - ov;
         if (CLASSES[d.cls].g !== CLASSES[a.cls].g) cost += 0.6;
-        pairs.push([cost, i, j]);
+        pairs.push([cost, i, j, 0]);
       }
     }
     pairs.sort((p, q) => p[0] - q[0]);
     const usedT = new Set(), usedD = new Set();
-    for (const [, i, j] of pairs) {
+    for (const [, i, j, jump] of pairs) {
       if (usedT.has(i) || usedD.has(j)) continue;
       usedT.add(i); usedD.add(j);
-      this.hit(tr[i], dets[j], t, out);
+      this.hit(tr[i], dets[j], t, out, jump);
     }
     dets.forEach((d, j) => { if (!usedD.has(j)) tr.push(this.spawn(d, t)); });
-    const keep = [];
+    const keep = tr.filter(a => t - a.t < this.maxAge);
     for (const a of tr) {
-      if (t - a.t < this.maxAge) keep.push(a);
-      // Jejak hilang (keluar layar/tertutup): cek sekali lagi dengan posisi asli terakhirnya.
-      else if (!a.counted && a.hits > 1) this.cross(a, t, out, a.cx, a.cy);
+      if (t - a.t < this.maxAge) continue;
+      // Jejak hilang (keluar layar/tertutup): hitungan tertunda dikonfirmasi, kecuali masih ada
+      // kendaraan di posisi terakhirnya (berarti tadi salah pasang dengan kendaraan yang diam).
+      if (a.pend) {
+        const r = 0.6 * Math.sqrt(a.w * a.h);
+        if (!keep.some(b => Math.hypot(b.cx - a.cx, b.cy - a.cy) < r)) this.emit(a, a.pend.dir, t, out);
+        a.pend = null;
+      } else if (!a.counted && a.hits > 1) this.cross(a, t, out, a.cx, a.cy);
     }
     this.tracks = keep;
     return out;
+  }
+
+  // Pada fps rendah kendaraan cepat bisa berpindah jauh lebih dari ukurannya antar frame.
+  // Garis hitung dipasang melintang jalan, jadi kendaraan bergerak tegak lurus garis.
+  // Pergeseran besar diterima bila searah itu (bukan pindah lajur), jenis & ukuran mirip,
+  // kecepatan masuk akal, dan searah gerak sebelumnya. Hasil: [biaya, lompatan melintasi garis].
+  axisCost(a, d, t, r) {
+    if (CLASSES[d.cls].g !== CLASSES[a.cls].g || r > 1.8 || r < 0.55) return null;
+    const dt = t - a.t;
+    if (dt <= 0 || dt > 700) return null;
+    const cx = d.x + d.w / 2, cy = d.y + d.h / 2;
+    if (Math.hypot(cx - a.cx, cy - a.cy) > 3 * Math.max(this.W, this.H) * dt / 1000) return null;
+    if (a.hits >= 2 && a.vx * (cx - a.cx) + a.vy * (cy - a.cy) < 0) return null;
+    const [x1, y1, x2, y2] = this.linePx();
+    const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+    const ex = (x2 - x1) / len, ey = (y2 - y1) / len;
+    const ddx = cx - a.px, ddy = cy - a.py;
+    const along = Math.abs(ddx * ex + ddy * ey), perp = Math.abs(ddy * ex - ddx * ey);
+    const size = (Math.sqrt(a.w * a.h) + Math.sqrt(d.w * d.h)) / 2;
+    if (along > 0.6 * size + 0.2 * perp) return null;
+    const s0 = this.sideAt(a.sx, a.sy, a)[0], s1 = this.sideAt(cx, cy, d)[0];
+    const crosses = !!(s0 && s1 && s0 !== s1);
+    if (crosses && a.hits >= 3 && Math.hypot(a.vx, a.vy) * 1000 < 0.25 * Math.sqrt(a.w * a.h)) return null;
+    return [1.5 + along / size + 0.3 * perp / size, crosses && !a.counted ? 1 : 0];
+  }
+
+  // [sisi (1/-1/0 di dalam pita), posisi sepanjang garis (0..1), jarak bertanda, panjang garis]
+  sideAt(px, py, o) {
+    const [x1, y1, x2, y2] = this.linePx();
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const sd = (dx * (py - y1) - dy * (px - x1)) / len;
+    const u = ((px - x1) * dx + (py - y1) * dy) / (len * len);
+    const band = Math.max(4, Math.min(o.w, o.h) * 0.15);
+    return [sd > band ? 1 : sd < -band ? -1 : 0, u, sd, len];
   }
 
   spawn(d, t) {
@@ -111,18 +158,23 @@ class Tracker {
       side: 0, su: 0.5, counted: false, box: d
     };
     this.cross(a, t, null);
+    if (!a.side) { const [, u, sd] = this.sideAt(a.cx, a.cy, a); a.b0 = { u, sd }; }
+    a.bx = a.cx; a.by = a.cy;
     return a;
   }
 
-  hit(a, d, t, out) {
+  hit(a, d, t, out, jump) {
     const cx = d.x + d.w / 2, cy = d.y + d.h / 2;
     const dt = Math.max(t - a.t, 1);
     const vx = (cx - a.cx) / dt, vy = (cy - a.cy) / dt;
+    // Jejak yang baru sekali terlihat lalu bergeser jauh belum tentu kendaraan yang sama:
+    // penyeberangan garisnya ikut menunggu konfirmasi.
+    if (!jump && a.hits === 1 && Math.hypot(cx - a.cx, cy - a.cy) > 0.8 * Math.sqrt(a.w * a.h)) jump = 1;
     // Filter alfa-beta: halus untuk kendaraan diam, tidak tertinggal untuk kendaraan bergerak.
-    // Pada deteksi kedua kecepatan belum diketahui, jadi pakai posisi asli.
+    // Pada deteksi kedua (atau setelah lompatan) pakai posisi asli.
     const pdt = Math.min(dt, 400);
-    a.sx = a.hits > 1 ? (a.sx + a.vx * pdt) * 0.45 + cx * 0.55 : cx;
-    a.sy = a.hits > 1 ? (a.sy + a.vy * pdt) * 0.45 + cy * 0.55 : cy;
+    a.sx = a.hits > 1 && !jump ? (a.sx + a.vx * pdt) * 0.45 + cx * 0.55 : cx;
+    a.sy = a.hits > 1 && !jump ? (a.sy + a.vy * pdt) * 0.45 + cy * 0.55 : cy;
     a.vx = a.hits > 1 ? a.vx * 0.55 + vx * 0.45 : vx;
     a.vy = a.hits > 1 ? a.vy * 0.55 + vy * 0.45 : vy;
     a.cx = cx; a.cy = cy;
@@ -136,31 +188,45 @@ class Tracker {
     a.score = d.score;
     a.hits++;
     a.t = t;
-    this.cross(a, t, out);
+    if (a.pend && !jump) this.confirm(a, t, out);
+    this.cross(a, t, out, a.sx, a.sy, jump);
+  }
+
+  // Hitungan dari lompatan jauh baru sah bila kendaraan terus menjauhi garis di sisi barunya.
+  // Bila malah diam atau balik, itu salah pasang (mis. dua kendaraan macet di kedua sisi garis).
+  confirm(a, t, out) {
+    const p = a.pend;
+    const [s, , sd] = this.sideAt(a.cx, a.cy, a);
+    const to = p.dir === 1 ? -1 : 1;
+    const size = Math.sqrt(a.w * a.h);
+    if (s === to && Math.abs(sd) >= p.d0 + 0.25 * size) { a.pend = null; this.emit(a, p.dir, t, out); }
+    else if (s === -to || ++p.n >= 3) { a.pend = null; a.counted = false; }
+  }
+
+  emit(a, dir, t, out) {
+    if (!out || !this.armed) return;
+    a.flash = t;
+    out.push({ cls: a.cls, dir, x: a.cx, y: a.cy, id: a.id });
   }
 
   // Sisi garis memakai posisi yang dihaluskan dan pita toleransi, agar kendaraan
   // yang berhenti atau bergetar di atas garis tidak ikut terhitung.
-  cross(a, t, out, px = a.sx, py = a.sy) {
-    const [x1, y1, x2, y2] = this.linePx();
-    const dx = x2 - x1, dy = y2 - y1;
-    const len = Math.hypot(dx, dy) || 1;
-    const sd = (dx * (py - y1) - dy * (px - x1)) / len;
-    const u = ((px - x1) * dx + (py - y1) * dy) / (len * len);
-    const band = Math.max(4, Math.min(a.w, a.h) * 0.15);
-    const s = sd > band ? 1 : sd < -band ? -1 : 0;
+  cross(a, t, out, px = a.sx, py = a.sy, jump) {
+    const [s, u, sd] = this.sideAt(px, py, a);
     if (!s) return;
-    if (out && a.side && s !== a.side && !a.counted && this.armed) {
+    let from = a.side;
+    // Pertama kali terlihat tepat di atas garis (mis. baru lepas dari halangan kendaraan lain),
+    // lalu bergerak jelas ke satu sisi: berarti datang dari sisi lawannya.
+    if (!from && a.b0 && out && Math.abs(sd - a.b0.sd) >= 0.5 * Math.sqrt(a.w * a.h)) { from = -s; a.su = a.b0.u; }
+    if (from) a.b0 = null;
+    if (out && from && s !== from && !a.counted && this.armed) {
       const um = (u + a.su) / 2;
       if (um >= -0.04 && um <= 1.04) {
-        const dir = a.side === 1 ? 1 : 2;
+        const dir = from === 1 ? 1 : 2;
         a.counted = true;
-        if (this.dirs & dir) {
-          a.flash = t;
-          out.push({ cls: a.cls, dir, x: a.cx, y: a.cy, id: a.id });
-        } else {
-          a.skip = true;
-        }
+        if (!(this.dirs & dir)) a.skip = true;
+        else if (jump) a.pend = { dir, d0: Math.abs(sd), n: 0 };
+        else this.emit(a, dir, t, out);
       }
     }
     a.side = s;
@@ -168,7 +234,7 @@ class Tracker {
   }
 
   resync() {
-    for (const a of this.tracks) { a.side = 0; this.cross(a, a.t, null); }
+    for (const a of this.tracks) { a.side = 0; a.b0 = null; this.cross(a, a.t, null); }
   }
 }
 
@@ -217,7 +283,7 @@ const Model = {
 
 const Engine = {
   video: null, canvas: null, ctx: null,
-  stream: null, url: '', source: '', fileName: '', facing: 'environment', cams: 0,
+  stream: null, track: null, url: '', source: '', fileName: '', facing: 'environment', deviceId: '', cams: [], zoom: null,
   vision: null, fileset: null, det: null, delegate: '', modelKey: '', _loading: null, _loadingKey: '',
   tracker: new Tracker(),
   interval: 66, thr: 0.45, enabled: CLASSES.map(c => c.on), showBoxes: true, armed: false,
@@ -239,28 +305,39 @@ const Engine = {
 
   setLine(l) { if (l && [l.x1, l.y1, l.x2, l.y2].every(v => typeof v === 'number' && v >= 0 && v <= 1)) this.tracker.line = Object.assign({}, l); },
 
-  async startCamera(facing) {
+  // opt.deviceId: lensa tertentu (mis. ultra-wide 0,5x). opt.facing: 'environment' | 'user'.
+  async startCamera(opt = {}) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       throw new Error(location.protocol === 'https:' || location.hostname === 'localhost' ? 'Browser ini tidak mendukung kamera' : 'Kamera butuh HTTPS');
     }
-    const want = facing || this.facing;
+    const want = opt.facing || this.facing;
+    const dev = opt.deviceId || '';
+    const video = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+    if (dev) video.deviceId = { exact: dev }; else video.facingMode = { ideal: want };
+    // Minta izin zoom: di sebagian HP lensa 0,5x/0,6x tersedia sebagai zoom di bawah 1.
+    video.zoom = true;
+    // HP umumnya tidak bisa membuka dua kamera sekaligus, jadi kamera lama dilepas dulu.
+    this.stopSource();
     let s;
     try {
-      s = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { facingMode: { ideal: want }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
-      });
+      s = await navigator.mediaDevices.getUserMedia({ audio: false, video });
     } catch (e) {
       const n = e && e.name;
+      if (dev && (n === 'OverconstrainedError' || n === 'NotFoundError')) return this.startCamera({ facing: want });
       if (n === 'NotAllowedError' || n === 'SecurityError') throw new Error('Izin kamera ditolak. Izinkan kamera untuk situs ini di pengaturan browser.');
       if (n === 'NotFoundError' || n === 'OverconstrainedError') throw new Error('Kamera tidak ditemukan');
       if (n === 'NotReadableError' || n === 'AbortError') throw new Error('Kamera sedang dipakai aplikasi lain');
       throw new Error('Kamera gagal dibuka');
     }
-    this.stopSource();
     this.stream = s;
-    this.facing = want;
     this.source = 'camera';
+    const track = s.getVideoTracks()[0];
+    this.track = track;
+    const st = (track && track.getSettings && track.getSettings()) || {};
+    const caps = (track && track.getCapabilities && track.getCapabilities()) || {};
+    this.deviceId = st.deviceId || dev;
+    this.facing = st.facingMode ? (st.facingMode === 'user' ? 'user' : 'environment') : want;
+    this.zoom = caps.zoom && caps.zoom.max > caps.zoom.min ? { min: caps.zoom.min, max: caps.zoom.max, cur: st.zoom || Math.max(1, caps.zoom.min) } : null;
     const v = this.video;
     v.removeAttribute('src');
     v.loop = false;
@@ -268,7 +345,15 @@ const Engine = {
     await v.play().catch(() => {});
     this.tracker.reset();
     this.run();
-    try { this.cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput').length; } catch (e) { this.cams = 1; }
+    try {
+      this.cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput').map(d => ({ id: d.deviceId, label: d.label || '' }));
+    } catch (e) { this.cams = []; }
+  },
+
+  async setZoom(z) {
+    if (!this.track || !this.zoom) return false;
+    z = Math.max(this.zoom.min, Math.min(this.zoom.max, z));
+    try { await this.track.applyConstraints({ advanced: [{ zoom: z }] }); this.zoom.cur = z; return true; } catch (e) { return false; }
   },
 
   // Video dari file berhenti di frame pertama. Diputar saat sesi berjalan (lihat playFile).
@@ -310,6 +395,9 @@ const Engine = {
     this.on = false;
     cancelAnimationFrame(this.raf);
     if (this.stream) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
+    this.track = null;
+    this.zoom = null;
+    this.motion = { par: 0, perp: 0, hinted: false };
     const v = this.video;
     if (v) {
       v.pause();
@@ -347,24 +435,75 @@ const Engine = {
       throw new Error(navigator.onLine ? 'Mesin AI gagal dimuat, coba lagi' : 'Butuh internet untuk memuat AI pertama kali');
     }
     prog(0.08, 'Mengunduh model');
-    const buf = await Model.get(CONFIG.MODELS[key], (p) => prog(0.08 + p * 0.84, 'Mengunduh model'));
-    prog(0.94, 'Menyiapkan model');
-    // Inferensi pertama lambat (kompilasi shader). Dipanaskan di sini agar tidak ada kendaraan terlewat
-    // saat mulai menghitung, sekaligus mendeteksi GPU yang tidak bisa dipakai.
-    const warm = (d) => {
-      const c = document.createElement('canvas');
-      c.width = 320; c.height = 240;
-      c.getContext('2d').fillRect(0, 0, 320, 240);
-      d.detectForVideo(c, performance.now());
-      return d;
+    const buf = await Model.get(CONFIG.MODELS[key], (p) => prog(0.08 + p * 0.6, 'Mengunduh model'));
+    prog(0.7, 'Menguji kecepatan');
+    let det = null;
+    let pick = this.proc === 'gpu' ? 'GPU' : this.proc === 'cpu' ? 'CPU' : (Store.json('bench:' + key, null) || {}).d;
+    const cpu = async () => {
+      // Di CPU model int8 sekitar 30% lebih cepat daripada float16.
+      const b8 = await Model.get(CONFIG.MODELS_INT8[key], (p) => prog(0.72 + p * 0.2, 'Mengunduh model CPU'));
+      this.buf8 = b8;
+      return this.warm(await this.create(b8, 'CPU'));
     };
-    let det;
-    try { det = warm(await this.create(buf, 'GPU')); } catch (e) { det = warm(await this.create(buf, 'CPU')); }
-    if (this.det) { try { this.det.close(); } catch (e) {} }
+    if (pick === 'CPU') det = await cpu();
+    else if (pick === 'GPU') {
+      try { det = this.warm(await this.create(buf, 'GPU')); } catch (e) { det = await cpu(); }
+    } else {
+      // Otomatis: ukur GPU dulu. Jika lambat, ukur CPU dan pakai yang lebih cepat.
+      let g = null, gms = Infinity;
+      try { g = this.warm(await this.create(buf, 'GPU')); gms = this.time(g); } catch (e) { g = null; }
+      this.bench = { GPU: isFinite(gms) ? Math.round(gms) : null, CPU: null };
+      if (g && gms <= 45) det = g;
+      else {
+        let c = null, cms = Infinity;
+        try { c = await cpu(); cms = this.time(c); } catch (e) { c = null; }
+        this.bench.CPU = isFinite(cms) ? Math.round(cms) : null;
+        if (c && (!g || cms < gms)) { det = c; if (g) g.close(); } else { det = g; if (c) c.close(); }
+        if (!det) throw new Error('AI tidak bisa berjalan di perangkat ini');
+      }
+      Store.setJson('bench:' + key, { d: det.__d, g: this.bench.GPU, c: this.bench.CPU });
+    }
+    if (det.__d) this.delegate = det.__d;
+    if (this.det && this.det !== det) { try { this.det.close(); } catch (e) {} }
     this.det = det;
     this.buf = buf;
     this.modelKey = key;
     prog(1, '');
+  },
+
+  // Inferensi pertama lambat (kompilasi shader). Dipanaskan di sini agar tidak ada kendaraan
+  // terlewat saat mulai menghitung, sekaligus mendeteksi GPU yang tidak bisa dipakai.
+  warm(d) {
+    const c = this.benchCanvas();
+    d.detectForVideo(c, this.ts());
+    d.detectForVideo(c, this.ts());
+    return d;
+  },
+
+  time(d) {
+    const c = this.benchCanvas();
+    const t0 = performance.now();
+    for (let i = 0; i < 3; i++) d.detectForVideo(c, this.ts());
+    return (performance.now() - t0) / 3;
+  },
+
+  ts() { this._ts = Math.max((this._ts || 0) + 1, performance.now()); return this._ts; },
+
+  benchCanvas() {
+    if (this._bc) return this._bc;
+    const c = document.createElement('canvas');
+    c.width = 640; c.height = 360;
+    const g = c.getContext('2d');
+    g.fillStyle = '#6b6f73'; g.fillRect(0, 0, 640, 360);
+    g.fillStyle = '#2b3a55'; g.fillRect(220, 170, 200, 110);
+    g.fillStyle = '#111'; g.beginPath(); g.arc(260, 285, 22, 0, 7); g.arc(380, 285, 22, 0, 7); g.fill();
+    return (this._bc = c);
+  },
+
+  unload() {
+    if (this.det) { try { this.det.close(); } catch (er) {} }
+    this.det = null;
+    this.modelKey = '';
   },
 
   async create(buf, delegate) {
@@ -376,6 +515,7 @@ const Engine = {
       categoryAllowlist: CLASSES.map(c => c.coco)
     });
     this.delegate = delegate;
+    det.__d = delegate;
     return det;
   },
 
@@ -385,7 +525,11 @@ const Engine = {
     const old = this.det;
     this.det = null;
     try { if (old) old.close(); } catch (e) {}
-    try { this.det = await this.create(this.buf, 'CPU'); } catch (e) { if (this.onError) this.onError(new Error('AI tidak bisa berjalan di perangkat ini')); }
+    try {
+      const b8 = this.buf8 || await Model.get(CONFIG.MODELS_INT8[this.modelKey]).catch(() => this.buf);
+      this.det = await this.create(b8, 'CPU');
+      Store.setJson('bench:' + this.modelKey, { d: 'CPU' });
+    } catch (e) { if (this.onError) this.onError(new Error('AI tidak bisa berjalan di perangkat ini')); }
     this._fb = false;
   },
 
@@ -418,7 +562,7 @@ const Engine = {
     let res;
     const t0 = performance.now();
     try {
-      res = this.det.detectForVideo(v, now);
+      res = this.det.detectForVideo(v, this.ts());
     } catch (e) {
       if (this.delegate === 'GPU') this.fallbackCpu();
       else { this.det = null; if (this.onError) this.onError(new Error('Deteksi gagal: ' + (e && e.message || e))); }
@@ -441,11 +585,30 @@ const Engine = {
     const dets = cleanDets(raw).filter(d => this.enabled[d.cls]);
     this.tracker.armed = this.armed;
     const hits = this.tracker.update(dets, now);
+    this.checkMotion();
     for (const h of hits) {
       this.pops.push({ x: h.x, y: h.y, cls: h.cls, t: now });
       this.flashAt = now;
       if (this.onCount) this.onCount(h.cls, h.dir);
     }
+  },
+
+  // Kendaraan yang bergerak sejajar garis tidak akan pernah melintasinya. Jika itu yang terlihat,
+  // beri tahu pengguna agar memutar garis.
+  checkMotion() {
+    const m = this.motion || (this.motion = { par: 0, perp: 0, hinted: false });
+    if (m.hinted) return;
+    const [x1, y1, x2, y2] = this.tracker.linePx();
+    const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+    for (const a of this.tracker.tracks) {
+      if (a.mv || a.hits < 4) continue;
+      const dx = a.cx - a.bx, dy = a.cy - a.by, d = Math.hypot(dx, dy);
+      if (d < 1.5 * Math.sqrt(a.w * a.h)) continue;
+      a.mv = true;
+      const cos = Math.abs(dx * (x2 - x1) + dy * (y2 - y1)) / (d * len);
+      if (cos > 0.85) m.par++; else if (cos < 0.6) m.perp++;
+    }
+    if (m.par >= 4 && m.par >= 3 * m.perp) { m.hinted = true; if (this.onLineHint) this.onLineHint(); }
   },
 
   fit() {
@@ -649,6 +812,7 @@ const Engine = {
       setTimeout(() => { this._noClick = false; }, 0);
       c.classList.remove('dragging');
       this.tracker.resync();
+      this.resetMotion();
       if (this.onLine) this.onLine(Object.assign({}, this.tracker.line));
     };
     el.addEventListener('pointerup', end, true);
@@ -666,6 +830,12 @@ const Engine = {
     const cl = (v) => Math.max(0.02, Math.min(0.98, v));
     this.tracker.line = { x1: cl((mx + vy) / W), y1: cl((my - vx) / H), x2: cl((mx - vy) / W), y2: cl((my + vx) / H) };
     this.tracker.resync();
+    this.resetMotion();
     if (this.onLine) this.onLine(Object.assign({}, this.tracker.line));
+  },
+
+  resetMotion() {
+    this.motion = { par: 0, perp: 0, hinted: false };
+    for (const a of this.tracker.tracks) { a.mv = true; }
   }
 };

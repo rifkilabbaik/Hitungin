@@ -93,6 +93,7 @@ const Prefs = {
     this.tapDir = [0, 1, 2].includes(+Store.get('tapDir')) ? +Store.get('tapDir') : 0;
     this.limit = [0, 5, 15, 30, 60].includes(+Store.get('limit')) ? +Store.get('limit') : 0;
     this.line = Store.json('line', null);
+    this.proc = ['auto', 'gpu', 'cpu'].includes(Store.get('proc')) ? Store.get('proc') : 'auto';
   },
   put(k, v) {
     this[k] = v;
@@ -388,6 +389,7 @@ const App = {
     Engine.onSize = (w, h) => $('#stage').style.setProperty('--arn', (w / h).toFixed(4));
     Engine.onEnded = () => { if (this.cur && Ses.running(this.cur)) this.pause(); this.toast('Video selesai'); this.renderStage(); };
     Engine.onError = (e) => this.toast(e.message);
+    Engine.onLineHint = () => this.lineHint(true);
 
     this.bind();
     this.initTip();
@@ -438,7 +440,10 @@ const App = {
     $('#inFile').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) this.openFile(f); });
     $('#btnCamOff').addEventListener('click', () => this.camOff());
     $('#btnFlip').addEventListener('click', () => this.flip());
-    $('#btnLine').addEventListener('click', () => { Engine.rotateLine(); this.toast('Garis diputar'); });
+    $('#btnLine').addEventListener('click', () => { Engine.rotateLine(); this.lineHint(false); this.toast('Garis diputar'); });
+    $('#btnHintRotate').addEventListener('click', () => { Engine.rotateLine(); this.lineHint(false); this.toast('Garis diputar'); });
+    $('#btnHintClose').addEventListener('click', () => this.lineHint(false));
+    $('#lens').addEventListener('click', (e) => { const b = e.target.closest('[data-i]'); if (b) this.pickLens(+b.dataset.i); });
     $('#btnBoxes').addEventListener('click', () => { Prefs.put('boxes', !Prefs.boxes); this.applyEngine(); this.renderStage(); this.renderSettings(); });
     $('#btnFull').addEventListener('click', () => this.fullscreen());
     document.addEventListener('fullscreenchange', () => this.renderStage());
@@ -479,6 +484,8 @@ const App = {
     $$('#themeSeg button').forEach(b => b.addEventListener('click', () => { Store.set('theme', b.dataset.theme); this.applyTheme(); }));
     $$('#modelSeg button').forEach(b => b.addEventListener('click', () => this.setModel(b.dataset.model)));
     $$('#fpsSeg button').forEach(b => b.addEventListener('click', () => { Prefs.put('fps', b.dataset.fps); this.applyEngine(); this.renderSettings(); }));
+    $$('#procSeg button').forEach(b => b.addEventListener('click', () => this.setProc(b.dataset.proc)));
+    $('#btnBench').addEventListener('click', () => this.rebench());
     $('#inThr').addEventListener('input', (e) => { Prefs.put('thr', +e.target.value); this.applyEngine(); this.renderThr(); });
     $('#clsToggles').addEventListener('click', (e) => {
       const b = e.target.closest('[data-c]');
@@ -538,6 +545,7 @@ const App = {
   },
 
   applyEngine() {
+    Engine.proc = Prefs.proc;
     Engine.interval = CONFIG.FPS[Prefs.fps];
     Engine.thr = Prefs.thr / 100;
     Engine.enabled = Prefs.cls.slice();
@@ -578,6 +586,7 @@ const App = {
     $$('.view').forEach(v => v.classList.toggle('active', v.dataset.view === view));
     const b = document.body;
     b.classList.toggle('no-filter', ['count', 'session', 'settings'].includes(view) || (view === 'home' && !this.sessions.length));
+    b.classList.toggle('on-count', view === 'count');
     const sub = view === 'session' || (view === 'settings' && innerWidth < 1040);
     $('#btnBack').hidden = !sub;
     $('#topLogo').hidden = sub;
@@ -1005,6 +1014,7 @@ const App = {
     const fps = $('#stFps');
     if (this.camState === 'ready' && Engine.det) fps.textContent = `AI ${Math.round(Engine.fps)} fps${Engine.delegate === 'CPU' ? ' · CPU' : ''}`;
     else fps.textContent = '';
+    fps.classList.toggle('slow', this.camState === 'ready' && !!Engine.det && Engine.stamps.length > 4 && Engine.fps < 7);
   },
 
   renderStage() {
@@ -1023,7 +1033,8 @@ const App = {
       $('#btnCam span').textContent = 'Nyalakan kamera';
     }
     $('#stLoad').hidden = this.camState !== 'loading';
-    $('#btnFlip').hidden = Engine.source !== 'camera' || Engine.cams < 2;
+    $('#btnFlip').hidden = Engine.source !== 'camera' || Engine.cams.length < 2;
+    this.renderLens();
     const fsOk = document.fullscreenEnabled || document.webkitFullscreenEnabled;
     const fs = document.fullscreenElement || document.webkitFullscreenElement;
     $('#btnFull').hidden = !fsOk;
@@ -1065,8 +1076,10 @@ const App = {
     if (this.camState === 'loading' || this.camState === 'starting') return;
     this.camState = 'starting';
     try {
-      await Engine.startCamera();
+      await Engine.startCamera({ deviceId: Store.get('camDevice') });
       Store.set('camOk', '1');
+      const z = +Store.get('camZoom');
+      if (z && Engine.zoom) await Engine.setZoom(z);
     } catch (e) {
       this.camState = 'error';
       this.camErrT = 'Kamera tidak bisa dibuka';
@@ -1086,6 +1099,7 @@ const App = {
 
   camOff() {
     Engine.stopSource();
+    this.lineHint(false);
     if (this.camState !== 'loading') this.camState = 'off';
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     this.updateWake();
@@ -1093,8 +1107,62 @@ const App = {
   },
 
   async flip() {
-    try { await Engine.startCamera(Engine.facing === 'environment' ? 'user' : 'environment'); } catch (e) { this.toast(e.message); }
+    const front = Engine.facing !== 'user';
+    try { await Engine.startCamera(front ? { facing: 'user' } : { facing: 'environment', deviceId: Store.get('camDevice') }); } catch (e) { this.toast(e.message); }
     this.renderStage();
+  },
+
+  // Pilihan lensa: zoom di bawah 1 (0,5x/0,6x) bila HP mendukung, atau daftar kamera belakang.
+  lensOpts() {
+    if (Engine.source !== 'camera' || Engine.facing === 'user') return [];
+    const z = Engine.zoom;
+    const zf = (v) => F.num(v, 1) + '×';
+    const zoomOpts = (vals) => vals.filter((v, i) => v >= z.min - 1e-3 && v <= z.max + 1e-3 && vals.indexOf(v) === i)
+      .map(v => ({ t: zf(v), zoom: v, on: Math.abs(z.cur - v) < 0.05 }));
+    if (z && z.min < 0.95) return zoomOpts([Math.round(z.min * 10) / 10, 1, 2]);
+    const back = Engine.cams.filter(c => !/front|depan|user/i.test(c.label) && !/dual|triple|ganda|tiga/i.test(c.label));
+    if (back.length > 1) {
+      const rank = (c) => /ultra|lebar|0[.,]5/i.test(c.label) ? 0 : /tele/i.test(c.label) ? 3 : /camera2 0\b|^back camera$|kamera belakang$/i.test(c.label) ? 1 : 2;
+      let n = 0;
+      return back.map(c => ({ c, r: rank(c) })).sort((p, q) => p.r - q.r).map(x => ({
+        t: x.r === 0 ? '0,5×' : x.r === 1 ? '1×' : x.r === 3 ? 'Tele' : 'Lensa ' + (++n),
+        id: x.c.id, label: x.c.label, on: x.c.id === Engine.deviceId
+      }));
+    }
+    if (z && z.max >= 2) return zoomOpts([1, 2]);
+    return [];
+  },
+
+  renderLens() {
+    const opts = this.lensOpts();
+    this._lens = opts;
+    const el = $('#lens');
+    el.hidden = opts.length < 2;
+    el.innerHTML = opts.map((o, i) => `<button data-i="${i}" class="${o.on ? 'on' : ''}" aria-pressed="${o.on}">${esc(o.t)}</button>`).join('');
+  },
+
+  async pickLens(i) {
+    const o = (this._lens || [])[i];
+    if (!o || o.on) return;
+    if (o.zoom) {
+      if (await Engine.setZoom(o.zoom)) Store.set('camZoom', String(o.zoom));
+      else this.toast('Zoom tidak didukung kamera ini');
+    } else if (o.id) {
+      Store.set('camDevice', o.id);
+      Store.del('camZoom');
+      try { await Engine.startCamera({ deviceId: o.id }); } catch (e) { this.toast(e.message); }
+      if (/^Lensa/.test(o.t)) this.toast(o.t + ' aktif. Pilih lensa yang gambarnya paling lebar.');
+    }
+    this.renderStage();
+  },
+
+  lineHint(on) {
+    $('#stHint').hidden = !on;
+    clearTimeout(this._lh);
+    if (on) {
+      if (Prefs.vib) Fx.buzz([40, 60, 40]);
+      this._lh = setTimeout(() => { $('#stHint').hidden = true; }, 20000);
+    }
   },
 
   fullscreen() {
@@ -1510,6 +1578,21 @@ const App = {
   },
 
   // ---------- Pengaturan ----------
+  async setProc(p) {
+    if (p === Prefs.proc) return;
+    Prefs.put('proc', p);
+    this.applyEngine();
+    this.renderSettings();
+    if (Engine.source && Engine.det) { Engine.unload(); await this.loadModel(); }
+  },
+
+  async rebench() {
+    Object.keys(CONFIG.MODELS).forEach(k => Store.del('bench:' + k));
+    if (Engine.source) { Engine.unload(); await this.loadModel(); this.toast('Kecepatan diuji ulang'); }
+    else this.toast('Diuji saat kamera dinyalakan');
+    this.renderSettings();
+  },
+
   async setModel(k) {
     if (k === Prefs.model) return;
     Prefs.put('model', k);
@@ -1527,6 +1610,12 @@ const App = {
   async renderSettings() {
     $$('#modelSeg button').forEach(b => b.classList.toggle('on', b.dataset.model === Prefs.model));
     $$('#fpsSeg button').forEach(b => b.classList.toggle('on', b.dataset.fps === Prefs.fps));
+    $$('#procSeg button').forEach(b => b.classList.toggle('on', b.dataset.proc === Prefs.proc));
+    const bm = Store.json('bench:' + Prefs.model, null);
+    const speed = [];
+    if (bm && bm.g) speed.push('GPU ' + bm.g + ' ms');
+    if (bm && bm.c) speed.push('CPU ' + bm.c + ' ms');
+    $('#benchInfo').textContent = speed.length ? 'Waktu per deteksi: ' + speed.join(' · ') + '. Makin kecil makin cepat.' : 'Otomatis memilih GPU atau CPU yang lebih cepat di HP ini.';
     $$('#dirSeg button').forEach(b => b.classList.toggle('on', +b.dataset.dirs === Prefs.dirs));
     this.renderThr();
     $('#clsToggles').innerHTML = CLASSES.map((c, i) => `<button type="button" data-c="${i}" class="${Prefs.cls[i] ? 'on' : ''}" style="--cc:var(--c${i})" aria-pressed="${Prefs.cls[i]}"><span>${ic(c.ic)}</span>${esc(c.t)}</button>`).join('');

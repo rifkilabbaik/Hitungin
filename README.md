@@ -5,10 +5,12 @@ PWA untuk menghitung kendaraan yang lewat dengan kamera HP. Deteksi AI berjalan 
 ## Fitur
 
 - **Hitung otomatis dengan kamera**: Motor, Mobil, Bus, Truk, Sepeda, dan Orang (opsional, mati secara bawaan).
-- **Garis hitung**: geser ujung atau badan garis langsung di layar kamera, atau putar 90° dengan tombol garis. Sisi garis diberi label **A** dan **B**.
+- **Garis hitung**: bawaannya tegak (untuk kamera di pinggir jalan). Geser ujung atau badan garis langsung di layar kamera, atau putar 90° dengan tombol garis. Sisi garis diberi label **A** dan **B**.
+  - Jika kendaraan terdeteksi bergerak **sejajar** garis (tidak akan pernah terhitung), muncul peringatan dengan tombol **Putar garis**.
   - Kendaraan dihitung per arah: **A→B** dan **B→A**. Bisa juga hanya satu arah (Pengaturan → Arah yang dihitung).
   - Setiap kendaraan dihitung sekali. Kendaraan yang berhenti atau bergetar di atas garis tidak dihitung berulang.
   - Pengendara motor/sepeda tidak ikut dihitung sebagai orang. Kotak ganda (misalnya mobil sekaligus truk) dihitung satu.
+  - Tetap bekerja di **fps rendah** (sekitar 5 fps). Kendaraan cepat yang berpindah jauh antar-frame tetap dilacak, karena pelacak memakai arah melintang garis. Lompatan yang meragukan baru dihitung setelah kendaraan terbukti terus bergerak.
 - **Mode Manual**: tap kartu jenis kendaraan, dengan pilihan arah (–, A→B, B→A).
 - **Koreksi**: di mode kamera, tap kartu untuk menambah kendaraan yang terlewat. Tombol ↶ membatalkan hitungan terakhir.
 - **Sesi**:
@@ -17,6 +19,9 @@ PWA untuk menghitung kendaraan yang lewat dengan kamera HP. Deteksi AI berjalan 
   - **Jeda / Lanjut / Selesai**.
   - Tersimpan otomatis. Jika aplikasi tertutup, sesi bisa dilanjutkan.
   - Jika aplikasi ditinggal saat menghitung dengan kamera, sesi otomatis dijeda karena kamera berhenti.
+- **Lensa 0,5× / 0,6×** (ultra-wide), agar jalan terlihat lebih panjang dan kendaraan lebih lama di layar. Tombol lensa muncul di layar kamera bila HP mendukung: lewat zoom di bawah 1×, atau lewat kamera ultra-wide terpisah. Pilihan lensa diingat.
+- **Prosesor otomatis**: saat AI dimuat, kecepatan GPU dan CPU diukur lalu dipilih yang lebih cepat. Di CPU dipakai model int8 yang lebih ringan. Bisa dipaksa GPU/CPU di Pengaturan.
+- **Tampilan HP mendatar**: navigasi pindah ke kiri, kamera setinggi layar.
 - **Buka video**: hitung dari rekaman di HP. Video berhenti di frame pertama (untuk mengatur garis) dan diputar saat **Mulai**.
 - **Layar penuh** dengan HUD (total, per jenis, tombol Mulai/Jeda). Layar tetap menyala selama kamera atau sesi aktif.
 - Suara dan getar saat kendaraan terhitung. Kotak deteksi bisa disembunyikan.
@@ -42,10 +47,24 @@ PWA untuk menghitung kendaraan yang lewat dengan kamera HP. Deteksi AI berjalan 
 
 ## Tips agar akurat
 
-- Pasang HP di tripod atau tempat yang tidak goyang, sebaiknya dari atas (jembatan penyeberangan, lantai 2).
-- Buat garis melintang tegak lurus arah kendaraan, di bagian jalan yang terlihat jelas dan tidak tertutup pohon.
+- **Dari pinggir jalan**: HP mendatar dan dipasang stabil, pakai lensa **0,5×**, garis **tegak** dari tepi jalan seberang sampai tepi jalan dekat.
+- **Dari atas** (jembatan penyeberangan, lantai 2) paling akurat karena kendaraan tidak saling menutupi. Garis dibuat mendatar melintang jalan.
+- Garis harus **melintang** arah kendaraan, di bagian jalan yang terlihat jelas dan tidak tertutup pohon.
+- Lihat label **AI … fps** di layar kamera. Di bawah 7 fps labelnya kuning: pakai model **Cepat**, lensa 0,5×, dan biarkan Prosesor **Otomatis**.
 - Hindari kamera menghadap matahari. Malam hari, hujan deras, dan kendaraan yang saling menutupi menurunkan akurasi.
 - HP lama: pakai model **Cepat** dan kecepatan **Normal** atau **Hemat**. HP baru: model **Akurat**.
+
+## Berapa fps yang cukup?
+
+Hasil simulasi pelacak (frame 1280 px, deteksi sesekali meleset 15%):
+
+| Kondisi | 3 fps | 5 fps | 8 fps | 15 fps |
+|---|---|---|---|---|
+| Pinggir jalan, lensa 0,5×, motor lajur dekat | 91% | 100% | 100% | 100% |
+| Pinggir jalan, lensa 1×, motor lajur dekat | 80% | 92% | 100% | 100% |
+| Motor sangat cepat (melintas layar < 1 detik) | 77% | 93% | 100% | 100% |
+
+5 fps sudah cukup bila kendaraan terlihat minimal sekitar 1 detik di layar. Lensa 0,5× membantu karena jalan yang terlihat lebih panjang.
 
 ## SMP
 
@@ -75,3 +94,5 @@ Service worker Hitungin hanya menghapus cache miliknya sendiri (`hitungin-*`). I
 - Menghitung hanya saat aplikasi terbuka di layar.
 - Video dari file diputar dengan kecepatan normal. Di HP yang lambat, kendaraan yang sangat cepat bisa terlewat.
 - Model COCO tidak membedakan angkot, pikap, atau bajaj secara khusus. Biasanya terbaca sebagai Mobil atau Truk.
+- Dari pinggir jalan, kendaraan di lajur jauh bisa tertutup kendaraan di lajur dekat tepat saat melewati garis, sehingga terlewat. Merekam dari tempat yang lebih tinggi mengurangi masalah ini.
+- Lensa 0,5× hanya muncul jika browser HP memberikan aksesnya. Sebagian HP tidak membuka kamera ultra-wide untuk browser.

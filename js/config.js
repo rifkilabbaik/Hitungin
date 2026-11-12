@@ -5,6 +5,11 @@ const CONFIG = {
     cepat: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite',
     akurat: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float16/1/efficientdet_lite2.tflite'
   },
+  // Dipakai bila AI berjalan di CPU (lebih cepat di CPU daripada float16).
+  MODELS_INT8: {
+    cepat: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite',
+    akurat: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/int8/1/efficientdet_lite2.tflite'
+  },
   FPS: { eco: 160, normal: 66, max: 0 },
   AUTOSAVE_MS: 4000
 };
